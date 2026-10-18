@@ -2,12 +2,14 @@ import {
   collection,
   addDoc,
   getDocs,
+  getDoc,
   onSnapshot,
   query,
   where,
   deleteDoc,
   doc,
   updateDoc,
+  deleteField,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { ExtractionResult } from './gemini';
@@ -25,6 +27,14 @@ export interface MaterialItem {
   confidence: number;
   status: 'ok' | 'expiring' | 'expired';
   createdAt: string;
+
+  // Optional stock & replenishment threshold settings
+  minThreshold?: number;
+  targetStockLevel?: number;
+  dailyUsageRate?: number;
+  supplierLeadDays?: number;
+  supplierId?: string;
+  unitPrice?: number;
 }
 
 export interface BatchUsageLog {
@@ -292,6 +302,55 @@ export async function updateMaterialQuantity(id: string, newQuantity: number): P
   try {
     const matRef = doc(db, 'materials', id);
     await updateDoc(matRef, { quantity: newQuantity });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+    throw error;
+  }
+}
+
+/**
+ * Fetch a single material by ID from Firestore
+ */
+export async function getMaterialById(id: string): Promise<MaterialItem | null> {
+  const path = `materials/${id}`;
+  try {
+    const docSnap = await getDoc(doc(db, 'materials', id));
+    if (!docSnap.exists()) return null;
+    return {
+      id: docSnap.id,
+      ...(docSnap.data() as Omit<MaterialItem, 'id'>),
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
+    return null;
+  }
+}
+
+/**
+ * Updates stock threshold configuration on a material item in Firestore
+ */
+export async function updateMaterialSettings(
+  id: string,
+  settings: {
+    minThreshold?: number;
+    targetStockLevel?: number;
+    dailyUsageRate?: number;
+    supplierLeadDays?: number;
+    supplierId?: string;
+    unitPrice?: number;
+  }
+): Promise<void> {
+  const path = `materials/${id}`;
+  try {
+    const cleanPayload: Record<string, any> = {};
+    for (const [key, value] of Object.entries(settings)) {
+      if (value !== undefined) {
+        cleanPayload[key] = value;
+      } else {
+        cleanPayload[key] = deleteField();
+      }
+    }
+    await updateDoc(doc(db, 'materials', id), cleanPayload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
     throw error;

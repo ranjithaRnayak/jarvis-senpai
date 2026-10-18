@@ -101,6 +101,47 @@
         }
       },
       "required": ["batchNo", "action", "quantityChange", "unit", "timestamp"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "Computed inventory alert for expiration, low stock, or stock-out risk.",
+      "type": "object",
+      "properties": {
+        "materialId": { "type": "string" },
+        "materialName": { "type": "string" },
+        "type": { "type": "string", "enum": ["expired", "expiring_soon", "low_stock", "stockout_risk"] },
+        "severity": { "type": "string", "enum": ["low", "med", "high"] },
+        "message": { "type": "string" },
+        "reason": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "resolved"] },
+        "evidence": { "type": "object" },
+        "actionable": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["materialId", "materialName", "type", "severity", "message", "reason", "status"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Purchase order requisition draft and approval record.",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string" },
+        "materialId": { "type": "string" },
+        "materialName": { "type": "string" },
+        "supplierId": { "type": "string" },
+        "supplierName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "unitPrice": { "type": "number" },
+        "estimatedCost": { "type": "number" },
+        "currency": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending_approval", "approved", "rejected"] },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["orderNumber", "materialId", "materialName", "supplierId", "quantity", "unit", "status"]
     }
   },
   "firestore": {
@@ -111,6 +152,14 @@
     "/batchUsageLogs/{logId}": {
       "schema": "BatchUsageLog",
       "description": "Collection of historical batch activities and dispensing usage logs."
+    },
+    "/alerts/{alertId}": {
+      "schema": "Alert",
+      "description": "Collection of active and resolved inventory alerts."
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Collection of draft and approved purchase orders."
     }
   }
 }

@@ -11,5 +11,11 @@ service cloud.firestore {
     match /batchUsageLogs/{logId} {
       allow read, write: if true;
     }
+    match /alerts/{alertId} {
+      allow read, write: if true;
+    }
+    match /orders/{orderId} {
+      allow read, write: if true;
+    }
   }
 }

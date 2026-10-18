@@ -14,6 +14,10 @@ export interface Translations {
   scanTab: string;
   inventoryTab: string;
   senpaiTab: string;
+  alertsTab: string;
+  ordersTab: string;
+  stockSettings: string;
+  draftPo: string;
 
   // Bankai Card
   bankaiToday: string;
@@ -186,6 +190,10 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
     scanTab: 'Scan',
     inventoryTab: 'Inventory',
     senpaiTab: 'Senpai',
+    alertsTab: 'Alerts',
+    ordersTab: 'Orders',
+    stockSettings: 'Settings',
+    draftPo: 'Draft PO',
 
     // Bankai Card
     bankaiToday: 'Bankai — Today',
@@ -362,6 +370,10 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
     scanTab: 'स्कैन',
     inventoryTab: 'इन्वेंटरी',
     senpaiTab: 'सेनपाई',
+    alertsTab: 'अलर्ट',
+    ordersTab: 'ऑर्डर',
+    stockSettings: 'सेटिंग्स',
+    draftPo: 'ड्राफ्ट PO',
 
     // Bankai Card
     bankaiToday: 'बान्काई — आज',
@@ -538,6 +550,10 @@ export const TRANSLATIONS: Record<AppLanguage, Translations> = {
     scanTab: 'ಸ್ಕ್ಯಾನ್',
     inventoryTab: 'ದಾಸ್ತಾನು',
     senpaiTab: 'ಸೆನ್‌ಪೈ',
+    alertsTab: 'ಎಚ್ಚರಿಕೆಗಳು',
+    ordersTab: 'ಆರ್ಡರ್‌ಗಳು',
+    stockSettings: 'ಸೆಟ್ಟಿಂಗ್‌ಗಳು',
+    draftPo: 'ಡ್ರಾಫ್ಟ್ PO',
 
     // Bankai Card
     bankaiToday: 'ಬಾಂಕೈ — ಇಂದಿನ ಮಾಹಿತಿ',

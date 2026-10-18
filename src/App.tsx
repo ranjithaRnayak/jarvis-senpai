@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   Camera,
   RotateCcw,
@@ -40,16 +40,32 @@ import {
   computeMaterialStatus,
   calculateExpiryDate
 } from './services/materialService';
+import {
+  InventoryAlert,
+  computeAlerts,
+  syncAlertsWithFirestore,
+  subscribeAlerts
+} from './services/alertService';
+import {
+  PurchaseOrder,
+  subscribeOrders,
+  draftOrder,
+  getCachedOrders,
+} from './services/orderService';
+import { AlertsScreen } from './components/AlertsScreen';
+import { OrdersScreen } from './components/OrdersScreen';
+import { DraftOrderModal } from './components/DraftOrderModal';
+import { MaterialSettingsModal } from './components/MaterialSettingsModal';
 import SenpaiScreen from './components/SenpaiScreen';
 import BankaiTodayCard from './components/BankaiTodayCard';
 import MaterialDetailsModal from './components/MaterialDetailsModal';
 import { AppLanguage, SUPPORTED_LANGUAGES, speakText } from './services/speechService';
 import { useLanguage } from './context/LanguageContext';
-import { Mic, Flame, History } from 'lucide-react';
+import { Mic, Flame, History, Sliders, ShoppingCart, ClipboardList } from 'lucide-react';
 
 // Re-export for external consumer/tests
-export { sendToGemini, EXTRACTION_PROMPT };
-export type { ExtractionResult, MaterialItem };
+export { sendToGemini, EXTRACTION_PROMPT, computeAlerts, draftOrder };
+export type { ExtractionResult, MaterialItem, InventoryAlert, PurchaseOrder };
 
 // Attach to window for automated testing
 if (typeof window !== 'undefined') {
@@ -124,7 +140,7 @@ const SAMPLE_PHOTOS = [
   },
 ];
 
-type ActiveTab = 'scan' | 'inventory' | 'senpai';
+type ActiveTab = 'scan' | 'inventory' | 'alerts' | 'orders' | 'senpai';
 type ScanMode = 'document' | 'photo' | 'id_card';
 type StatusFilter = 'all' | 'ok' | 'expiring' | 'expired';
 type ThemeMode = 'dark' | 'light';
@@ -145,7 +161,7 @@ export default function App() {
   // Theme state: defaults to dark (looks more premium)
   const [theme, setTheme] = useState<ThemeMode>('dark');
 
-  // Navigation tabs: 'scan', 'inventory', or 'senpai'
+  // Navigation tabs: 'scan', 'inventory', 'alerts', 'orders', or 'senpai'
   const [activeTab, setActiveTab] = useState<ActiveTab>('scan');
   const [senpaiInitialPrompt, setSenpaiInitialPrompt] = useState<string | null>(null);
   const [isCameraActive, setIsCameraActive] = useState<boolean>(true);
@@ -171,6 +187,19 @@ export default function App() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [selectedMaterialForDetails, setSelectedMaterialForDetails] = useState<MaterialItem | null>(null);
 
+  // Alerts state
+  const [alerts, setAlerts] = useState<InventoryAlert[]>([]);
+  const [isLoadingAlerts, setIsLoadingAlerts] = useState<boolean>(false);
+
+  // Orders state
+  const [orders, setOrders] = useState<PurchaseOrder[]>([]);
+  const [isLoadingOrders, setIsLoadingOrders] = useState<boolean>(true);
+
+  // Reorder / threshold modals state
+  const [selectedMaterialForSettings, setSelectedMaterialForSettings] = useState<MaterialItem | null>(null);
+  const [selectedMaterialForDraft, setSelectedMaterialForDraft] = useState<MaterialItem | null>(null);
+  const [draftOrderType, setDraftOrderType] = useState<'reorder' | 'replacement' | 'manual'>('reorder');
+
   // Camera UI controls
   const [selectedMode, setSelectedMode] = useState<ScanMode>('document');
   const [showGrid, setShowGrid] = useState<boolean>(true);
@@ -189,12 +218,48 @@ export default function App() {
     }, 3200);
   };
 
+  // Stable refs for materials and orders to break circular dependency loops
+  const materialsRef = useRef<MaterialItem[]>([]);
+  const ordersRef = useRef<PurchaseOrder[]>([]);
+  const isSyncingAlertsRef = useRef<boolean>(false);
+
+  // Keep refs in sync
+  materialsRef.current = materials;
+  ordersRef.current = orders;
+
+  // Compute and sync alerts helper with stable reference (no re-renders, no loop)
+  const recomputeAllAlerts = useCallback(
+    async (currentMaterials?: MaterialItem[], currentOrders?: PurchaseOrder[]) => {
+      const mats = currentMaterials ?? materialsRef.current;
+      const ords = currentOrders ?? (ordersRef.current.length > 0 ? ordersRef.current : getCachedOrders());
+
+      const computed = computeAlerts(mats, ords);
+      setAlerts(computed);
+
+      // Persist alerts to Firestore in background without re-entrant sync storms
+      if (!isSyncingAlertsRef.current && mats.length > 0) {
+        isSyncingAlertsRef.current = true;
+        try {
+          await syncAlertsWithFirestore(computed, mats);
+        } catch (err) {
+          console.warn('syncAlertsWithFirestore notice:', err);
+        } finally {
+          isSyncingAlertsRef.current = false;
+        }
+      }
+    },
+    []
+  );
+
   // Subscribe to real-time Firestore materials collection
   useEffect(() => {
     const unsubscribe = subscribeMaterials(
       (items) => {
         setMaterials(items);
+        materialsRef.current = items;
         setIsLoadingMaterials(false);
+        // Automatically recompute alerts whenever materials change
+        recomputeAllAlerts(items, ordersRef.current);
       },
       (err) => {
         console.warn('Firestore subscription warning:', err);
@@ -203,7 +268,41 @@ export default function App() {
     );
 
     return () => unsubscribe();
+  }, [recomputeAllAlerts]);
+
+  // Subscribe to real-time Firestore alerts collection
+  useEffect(() => {
+    const unsubscribe = subscribeAlerts(
+      (items) => {
+        if (items && items.length > 0) {
+          setAlerts(items);
+        }
+      },
+      (err) => {
+        console.warn('Alerts subscription notice:', err);
+      }
+    );
+
+    return () => unsubscribe();
   }, []);
+
+  // Subscribe to real-time Firestore orders collection
+  useEffect(() => {
+    const unsubscribe = subscribeOrders(
+      (items) => {
+        setOrders(items);
+        ordersRef.current = items;
+        setIsLoadingOrders(false);
+        recomputeAllAlerts(materialsRef.current, items);
+      },
+      (err) => {
+        console.warn('Orders subscription notice:', err);
+        setIsLoadingOrders(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [recomputeAllAlerts]);
 
   const handleOpenDeviceCamera = () => {
     if (cameraInputRef.current) {
@@ -501,6 +600,10 @@ export default function App() {
                   ? t.headerScanSubtitle
                   : activeTab === 'inventory'
                   ? t.headerInventorySubtitle
+                  : activeTab === 'alerts'
+                  ? t.alertsTab
+                  : activeTab === 'orders'
+                  ? t.ordersTab
                   : t.headerSenpaiSubtitle}
               </p>
             </div>
@@ -1397,6 +1500,64 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Stock thresholds & reorder actions */}
+                      <div className="flex items-center justify-between gap-1.5 pt-1 text-[11px]">
+                        {typeof item.minThreshold === 'number' ? (
+                          <span
+                            className={`px-2 py-0.5 rounded-[8px] border ${
+                              isDark ? 'bg-white/[0.03] border-white/5 text-slate-400' : 'bg-slate-50 border-slate-100 text-slate-500'
+                            }`}
+                          >
+                            Min: <strong className={isDark ? 'text-white' : 'text-slate-900'}>{item.minThreshold} {item.unit || ''}</strong>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedMaterialForSettings(item);
+                            }}
+                            className="px-2 py-0.5 rounded-[8px] bg-[#FBBC05]/15 hover:bg-[#FBBC05]/25 text-[#FBBC05] border border-[#FBBC05]/30 font-bold flex items-center gap-1 transition-all cursor-pointer"
+                            title="Click to set minimum threshold"
+                          >
+                            <Sliders className="w-3 h-3" />
+                            <span>Min threshold needed</span>
+                          </button>
+                        )}
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedMaterialForSettings(item);
+                            }}
+                            className={`h-7 px-2.5 rounded-[10px] text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer border ${
+                              isDark
+                                ? 'bg-white/[0.04] hover:bg-white/10 text-slate-300 border-white/10'
+                                : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+                            }`}
+                            title="Configure safety thresholds & suppliers"
+                          >
+                            <Sliders className="w-3 h-3" />
+                            <span>{t.stockSettings}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedMaterialForDraft(item);
+                              setDraftOrderType('reorder');
+                            }}
+                            className="h-7 px-2.5 rounded-[10px] bg-[#9B72CB]/15 hover:bg-[#9B72CB]/25 text-[#9B72CB] text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer border border-[#9B72CB]/30"
+                            title="Create Draft Purchase Order"
+                          >
+                            <ShoppingCart className="w-3 h-3" />
+                            <span>{t.draftPo}</span>
+                          </button>
+                        </div>
+                      </div>
+
                       {/* Dates, Batch History Action & Delete */}
                       <div className="flex items-center justify-between pt-1 text-[11px]">
                         <span className={`flex items-center gap-1 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
@@ -1469,6 +1630,41 @@ export default function App() {
         )}
 
         {/* ============================================================= */}
+        {/* INVENTORY ALERTS SCREEN (predict-alerts)                      */}
+        {/* ============================================================= */}
+        {activeTab === 'alerts' && (
+          <AlertsScreen
+            alerts={alerts}
+            materials={materials}
+            isLoading={isLoadingAlerts}
+            onRefreshAlerts={() => recomputeAllAlerts(materials, getCachedOrders())}
+            onDraftReorder={(mat, type) => {
+              setSelectedMaterialForDraft(mat);
+              setDraftOrderType(type);
+            }}
+            onOpenSettings={(mat) => setSelectedMaterialForSettings(mat)}
+            onViewOrder={(_orderId) => setActiveTab('orders')}
+          />
+        )}
+
+        {/* ============================================================= */}
+        {/* PURCHASE ORDERS SCREEN (draft-reorder)                        */}
+        {/* ============================================================= */}
+        {activeTab === 'orders' && (
+          <OrdersScreen
+            orders={orders}
+            materials={materials}
+            isLoading={isLoadingOrders}
+            onOpenDraftModal={(mat) => {
+              setSelectedMaterialForDraft(mat);
+              setDraftOrderType('reorder');
+            }}
+            triggerNotice={triggerNotice}
+            onOrderUpdated={() => recomputeAllAlerts(materials, getCachedOrders())}
+          />
+        )}
+
+        {/* ============================================================= */}
         {/* TAB 3: SENPAI VOICE AGENT SCREEN                              */}
         {/* ============================================================= */}
         {activeTab === 'senpai' && (
@@ -1493,7 +1689,7 @@ export default function App() {
         {/* GLOBAL BOTTOM NAVIGATION (Frosted Glass)                      */}
         {/* ============================================================= */}
         <nav
-          className={`h-16 border-t flex items-center justify-around px-4 z-20 flex-shrink-0 transition-colors ${
+          className={`h-16 border-t flex items-center justify-around px-1 z-20 flex-shrink-0 transition-colors ${
             isDark ? 'bg-[#10131b]/95 border-white/10' : 'bg-white/95 border-slate-200'
           }`}
         >
@@ -1538,6 +1734,50 @@ export default function App() {
 
           <button
             type="button"
+            onClick={() => setActiveTab('alerts')}
+            className={`min-h-[56px] flex-1 flex flex-col items-center justify-center transition-colors relative cursor-pointer ${
+              activeTab === 'alerts' ? 'text-[#4285F4]' : isDark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <div
+              className={`px-4 py-1 rounded-[16px] flex items-center justify-center transition-colors relative ${
+                activeTab === 'alerts' ? (isDark ? 'bg-[#4285F4]/15' : 'bg-[#4285F4]/10') : ''
+              }`}
+            >
+              <AlertTriangle className="w-5 h-5" />
+              {alerts.length > 0 && (
+                <span className="absolute -top-1 right-2 ai-rainbow-gradient text-white text-[9px] w-4 h-4 rounded-full flex items-center justify-center font-extrabold shadow-sm">
+                  {alerts.length}
+                </span>
+              )}
+            </div>
+            <span className="text-[11px] font-bold mt-0.5">{t.alertsTab}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('orders')}
+            className={`min-h-[56px] flex-1 flex flex-col items-center justify-center transition-colors relative cursor-pointer ${
+              activeTab === 'orders' ? 'text-[#4285F4]' : isDark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <div
+              className={`px-4 py-1 rounded-[16px] flex items-center justify-center transition-colors relative ${
+                activeTab === 'orders' ? (isDark ? 'bg-[#4285F4]/15' : 'bg-[#4285F4]/10') : ''
+              }`}
+            >
+              <ClipboardList className="w-5 h-5" />
+              {orders.filter((o) => o.status === 'pending_approval').length > 0 && (
+                <span className="absolute -top-1 right-2 ai-rainbow-gradient text-white text-[9px] w-4 h-4 rounded-full flex items-center justify-center font-extrabold shadow-sm">
+                  {orders.filter((o) => o.status === 'pending_approval').length}
+                </span>
+              )}
+            </div>
+            <span className="text-[11px] font-bold mt-0.5">{t.ordersTab}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => {
               setSenpaiInitialPrompt(null);
               setActiveTab('senpai');
@@ -1570,6 +1810,31 @@ export default function App() {
           isDark={isDark}
           onMaterialUpdated={() => {
             // Materials list will auto-update via onSnapshot subscription
+          }}
+        />
+
+        {/* ============================================================= */}
+        {/* MODALS: REORDER DRAFT & MATERIAL STOCK SETTINGS               */}
+        {/* ============================================================= */}
+        <DraftOrderModal
+          isOpen={!!selectedMaterialForDraft}
+          onClose={() => setSelectedMaterialForDraft(null)}
+          material={selectedMaterialForDraft}
+          orderType={draftOrderType}
+          onOrderSaved={(_orderId) => {
+            triggerNotice('Purchase Requisition saved with "pending_approval" status.');
+            recomputeAllAlerts(materials, getCachedOrders());
+            setActiveTab('orders');
+          }}
+        />
+
+        <MaterialSettingsModal
+          isOpen={!!selectedMaterialForSettings}
+          onClose={() => setSelectedMaterialForSettings(null)}
+          material={selectedMaterialForSettings}
+          onSettingsSaved={() => {
+            triggerNotice('Material stock settings updated.');
+            recomputeAllAlerts(materials, getCachedOrders());
           }}
         />
       </div>
